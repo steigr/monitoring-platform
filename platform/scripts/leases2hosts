@@ -1,0 +1,85 @@
+#!/bin/bash
+
+HOSTSFILE="/etc/hosts"
+TMPHOSTS="/tmp/tmphosts"
+SYSTEMPATTERNS="database- webapp- engine-" 
+TMPLEASES="/tmp/tmpleases"
+LOCKFILE="/tmp/leases2hosts.lock"
+PENDINGFILE="/tmp/leases2hosts.pending"
+
+l2h-lock() {
+  if [ -f $LOCKFILE ]; then
+    touch $PENDINGFILE
+    exit 1
+  fi
+  touch $LOCKFILE
+}
+
+l2h-unlock() {
+  if [ -f $PENDINGFILE ]; then
+    exit 1
+  fi
+  rm $LOCKFILE
+}
+
+l2h-cleanup() {
+  rm "/tmp/tmphosts"
+  rm "/tmp/tmpleases"
+}
+
+filter_old_hosts() {
+  cp $HOSTSFILE $TMPHOSTS
+  for ASYSTEM in $SYSTEMPATTERNS; do
+    cat $TMPHOSTS | grep -v "\ $ASYSTEM" > ${TMPHOSTS}$$
+    mv ${TMPHOSTS}$$ $TMPHOSTS
+  done
+}
+
+get_host_entry() {
+  ASYSTEM=$1
+  grep $ASYSTEM $TMPLEASES \
+  | sed -e "s/\ days\ /:/g" \
+  | awk '{print $4 " " $2 " " $3 }' \
+  | sort -n \
+  | tail -n1 \
+  | cut -f2- -d" " \
+  > $TMPLEASES-$ASYSTEM
+  ping -q -c2 $(cat $TMPLEASES-$ASYSTEM | cut -f1 -d" ") 2>/dev/null 1>/dev/null \
+  && cat $TMPLEASES-$ASYSTEM
+}
+
+get_host_leases() {
+  for SYSTEMPATTERN in $SYSTEMPATTERNS; do
+    SOMESYSTEMS=$(grep " $SYSTEMPATTERN" $TMPLEASES \
+    | awk '{print $3 }' \
+    | sort \
+    | uniq )
+    for ASYSTEM in $SOMESYSTEMS; do
+      get_host_entry $ASYSTEM >> $TMPHOSTS
+    done
+  done
+}
+
+create_tmp_leases() {
+  dumpleases > $TMPLEASES
+}
+
+l2h-publish() {
+  cp $TMPHOSTS ${HOSTSFILE}
+}
+
+run() {
+  l2h-lock
+  create_tmp_leases
+  THELOCK=true
+  while $THELOCK; do
+    filter_old_hosts
+    get_host_leases
+    l2h-publish
+    l2h-cleanup
+    l2h-unlock && THELOCK=false
+  done
+    
+}
+
+run
